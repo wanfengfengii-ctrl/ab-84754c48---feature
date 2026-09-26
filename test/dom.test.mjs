@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// 桩掉页面倒计时定时器：逐卡推进的正确性由 review 模型测试覆盖，
+// 同时避免旧页面实例的 interval 在 Node 中跨 boot 重渲染到新文档。
+globalThis.setInterval = () => ({ unref() {}, ref() {} });
+globalThis.clearInterval = () => {};
+
 function makeElement(id) {
   return {
     id,
@@ -134,4 +139,136 @@ test('刷新等价场景：草稿写入 localStorage，重新启动仍可继续�
   // 再次“启动”（新模块上下文读取同一 storage）
   const s2 = await boot(storage);
   assert.equal(s2.els.get('rateZh').value, '7.5');
+});
+
+// ---- 逐卡播审 ----
+
+const REVIEW_STORE = 'subtitle-planner-reviews-v1';
+
+function clickReview(els, act, extra) {
+  els.get('reviewView').dispatch('click', { target: { dataset: { reviewAct: act }, ...extra } });
+}
+
+test('播审：可行编排后可启动，逐卡呈现并记录通过，结论即时可见', async () => {
+  const { els, storage } = await boot();
+  els.get('planBtn').dispatch('click');
+  // 启动前没有播审记录，启动行可见。
+  assert.equal(els.get('reviewStartRow').hidden, false);
+  assert.equal(storage[REVIEW_STORE], undefined);
+
+  els.get('reviewStartBtn').dispatch('click');
+  assert.equal(els.get('reviewStartRow').hidden, true, '启动后启动行收起');
+  const view1 = els.get('reviewView').innerHTML;
+  assert.ok(view1.includes('字幕卡 1'));
+  assert.ok(view1.includes('剩余'));
+  assert.ok(view1.includes('通过本卡'));
+  assert.ok(view1.includes('需返工'));
+  assert.ok(storage[REVIEW_STORE], '播审已持久化');
+
+  clickReview(els, 'pass');
+  const view2 = els.get('reviewView').innerHTML;
+  assert.ok(view2.includes('字幕卡 1') && view2.includes('通过'), '第 1 卡标记通过');
+  assert.ok(view2.includes('is-current'), '已推进到下一当前卡');
+});
+
+test('播审：记录需返工后首张需返工卡稳定指向该卡', async () => {
+  const { els } = await boot();
+  els.get('planBtn').dispatch('click');
+  els.get('reviewStartBtn').dispatch('click');
+  clickReview(els, 'rework');
+  const view = els.get('reviewView').innerHTML;
+  assert.ok(view.includes('需返工'));
+  // 第 1 卡的返工徽标
+  assert.ok(/字幕卡 1[\s\S]*?需返工/.test(view));
+});
+
+test('播审：暂停出现暂停标记，继续后恢复播放', async () => {
+  const { els } = await boot();
+  els.get('planBtn').dispatch('click');
+  els.get('reviewStartBtn').dispatch('click');
+
+  clickReview(els, 'pause');
+  assert.ok(els.get('reviewView').innerHTML.includes('已暂停'));
+  assert.ok(els.get('reviewView').innerHTML.includes('继续'));
+
+  clickReview(els, 'resume');
+  const view = els.get('reviewView').innerHTML;
+  assert.ok(!view.includes('已暂停'));
+  assert.ok(view.includes('暂停'));
+});
+
+test('播审：编辑草稿后清楚标识失配，但冻结快照与逐卡结论仍可查看', async () => {
+  const { els } = await boot();
+  els.get('planBtn').dispatch('click');
+  els.get('reviewStartBtn').dispatch('click');
+  clickReview(els, 'pass'); // 第 1 卡通过
+
+  // 校对员编辑草稿（不重新编排）。
+  const rz = els.get('rateZh');
+  rz.value = '7.5';
+  rz.dispatch('input');
+
+  assert.equal(els.get('reviewMismatch').hidden, false, '显示失配横幅');
+  const view = els.get('reviewView').innerHTML;
+  assert.ok(view.includes('与当前草稿失配'));
+  assert.ok(/字幕卡 1[\s\S]*?通过/.test(view), '历史逐卡结论未被篡改');
+  assert.ok(view.includes('剩余'), '冻结快照仍按其确定时长呈现');
+});
+
+test('播审：刷新（重启页面）后重放同一当前卡与逐卡结论', async () => {
+  const storage = {};
+  const s1 = await boot(storage);
+  s1.els.get('planBtn').dispatch('click');
+  s1.els.get('reviewStartBtn').dispatch('click');
+  clickReview(s1.els, 'pass');
+  clickReview(s1.els, 'rework'); // 当前为第 2 卡，判返工
+
+  // 新页面上下文从同一 localStorage 恢复（lastResult 为空，仅靠快照渲染）。
+  const s2 = await boot(storage);
+  const view = s2.els.get('reviewView').innerHTML;
+  assert.ok(/字幕卡 1[\s\S]*?通过/.test(view), '第 1 卡通过结论恢复');
+  assert.ok(/字幕卡 2[\s\S]*?需返工/.test(view), '第 2 卡返工结论恢复');
+  assert.ok(view.includes('is-current'), '当前卡随重放恢复');
+});
+
+test('播审：收起当前播审并重新编排后，历史播审保留并标识失配、可重新打开', async () => {
+  const { els } = await boot();
+  els.get('planBtn').dispatch('click');
+  els.get('reviewStartBtn').dispatch('click');
+  clickReview(els, 'pass');
+  const reviewId = els.get('reviewView').innerHTML.match(/播审 <b>([^<]+)</)[1];
+
+  // 收起当前播审（记录保留）；编排仍可行时启动行重新可用。
+  clickReview(els, 'close');
+
+  // 编辑并重新编排（rateZh 6 -> 7 仍可行）。
+  const rz = els.get('rateZh');
+  rz.value = '7';
+  rz.dispatch('input');
+  els.get('planBtn').dispatch('click');
+  assert.equal(els.get('reviewStartRow').hidden, false, '新编排可启动新播审');
+
+  els.get('reviewStartBtn').dispatch('click');
+  // 旧播审进入历史区并标识失配。
+  assert.equal(els.get('reviewHistoryWrap').hidden, false);
+  const hist = els.get('reviewHistory').innerHTML;
+  assert.ok(hist.includes(reviewId), '历史区保留旧播审');
+  assert.ok(hist.includes('与当前草稿失配'));
+
+  // 打开旧播审：仍可查看每卡结论（第 1 卡通过）。
+  els.get('reviewHistory').dispatch('click', {
+    target: { closest: () => ({ dataset: { reviewSwitch: reviewId } }) },
+  });
+  const view = els.get('reviewView').innerHTML;
+  assert.ok(view.includes(reviewId));
+  assert.ok(/字幕卡 1[\s\S]*?通过/.test(view), '旧播审每卡结论仍可查看');
+  assert.ok(view.includes('与当前草稿失配'));
+});
+
+test('未启动播审的旧草稿：播审面板仅给占位提示，不影响既有编排结论', async () => {
+  const { els } = await boot();
+  els.get('planBtn').dispatch('click');
+  assert.equal(els.get('resultPanel').hidden, false);
+  assert.ok(els.get('resultBody').innerHTML.includes('编排成功'));
+  assert.equal(els.get('reviewStartRow').hidden, false, '可随时启动播审');
 });

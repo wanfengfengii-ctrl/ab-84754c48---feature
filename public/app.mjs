@@ -1,8 +1,22 @@
-// 页面逻辑：草稿（localStorage 持久化）、失效标记、调用精确编排模型、渲染结果。
+// 页面逻辑：草稿（localStorage 持久化）、失效标记、调用精确编排模型、渲染结果、
+// 逐卡播审（快照冻结 + 只追加事件重放，见 src/review.mjs）。
 import { plan, InputError } from '../src/model.mjs';
 import { fracToText, unitsToText } from '../src/decimal.mjs';
+import {
+  createReview,
+  replay,
+  fingerprint,
+  verdictEvent,
+  pauseEvent,
+  resumeEvent,
+  microsToSeconds,
+  serializeReview,
+  deserializeReview,
+} from '../src/review.mjs';
 
 const STORE_KEY = 'subtitle-planner-draft-v1';
+const REVIEW_KEY = 'subtitle-planner-reviews-v1';
+const REVIEW_LIMIT = 20;
 
 const SAMPLE = {
   params: { cardCount: '4', maxPerCard: '3', rateZh: '6', rateEn: '9' },
@@ -24,6 +38,13 @@ let draft = loadDraft();
 let lastResult = null;   // 最近一次成功编排的结果
 let stale = false;       // 草稿在上次编排后被改过
 
+// 播审：reviews 为只追加历史（新的在前）；activeId 为当前查看/进行中的播审。
+let reviews = loadReviews();
+let activeId = reviews.length ? reviews[0].reviewId : null;
+
+let timer = null;
+let expandedHistory = null; // 展开查看的历史播审 id
+
 function loadDraft() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
@@ -37,6 +58,43 @@ function loadDraft() {
 
 function saveDraft() {
   localStorage.setItem(STORE_KEY, JSON.stringify(draft));
+}
+
+function loadReviews() {
+  try {
+    const raw = localStorage.getItem(REVIEW_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return arr.map((t) => deserializeReview(t)).filter(Boolean);
+      }
+    }
+  } catch { /* 损坏记录忽略，不影响草稿与编排 */ }
+  return [];
+}
+
+// 播审历史整体重写一次存储，但每条播审内部的事件只追加、绝不改写。
+function persistReviews() {
+  const list = reviews.slice(0, REVIEW_LIMIT);
+  localStorage.setItem(REVIEW_KEY, JSON.stringify(list.map(serializeReview)));
+}
+
+function currentDraftId() {
+  return fingerprint(rawFromDraft());
+}
+
+function rawFromDraft() {
+  return {
+    cardCount: draft.params.cardCount,
+    maxPerCard: draft.params.maxPerCard,
+    rateZh: draft.params.rateZh,
+    rateEn: draft.params.rateEn,
+    units: draft.units.map((u) => ({ start: u.start, end: u.end, zh: u.zh, en: u.en })),
+  };
+}
+
+function activeReview() {
+  return reviews.find((r) => r.reviewId === activeId) || null;
 }
 
 // ---------------- 录入区 ----------------
@@ -85,19 +143,14 @@ function markEdited() {
     $('staleBanner').hidden = false;
   }
   $('formError').textContent = '';
+  renderReviewPanel();
 }
 
 // ---------------- 编排 ----------------
 
 function runPlan() {
   $('formError').textContent = '';
-  const raw = {
-    cardCount: draft.params.cardCount,
-    maxPerCard: draft.params.maxPerCard,
-    rateZh: draft.params.rateZh,
-    rateEn: draft.params.rateEn,
-    units: draft.units.map((u) => ({ start: u.start, end: u.end, zh: u.zh, en: u.en })),
-  };
+  const raw = rawFromDraft();
   let result;
   try {
     result = plan(raw);
@@ -114,6 +167,7 @@ function runPlan() {
   stale = false;
   $('staleBanner').hidden = true;
   renderResult(result, raw);
+  renderReviewPanel();
 }
 
 function highlightField(field) {
@@ -239,6 +293,218 @@ function renderInfeasible(r) {
     </div>`;
 }
 
+// ---------------- 逐卡播审 ----------------
+
+const STATUS_TEXT = {
+  pass: { label: '通过', cls: 'pass' },
+  rework: { label: '需返工', cls: 'rework' },
+  expired: { label: '已过期', cls: 'expired' },
+};
+
+function renderReviewPanel() {
+  const panel = $('reviewPanel');
+  panel.hidden = false;
+  const curId = currentDraftId();
+  const review = activeReview();
+
+  // 启动行：仅当最近一次编排可行且与当前草稿一致时，允许从它启动播审。
+  const canStart = !!lastResult && lastResult.result.feasible &&
+    (!stale) && fingerprint(lastResult.raw) === curId;
+  $('reviewStartRow').hidden = !canStart || !!review;
+  $('reviewMismatch').hidden = !(review && review.draftId !== curId);
+  if (review) {
+    $('reviewView').innerHTML = renderActiveReview(review, curId);
+  } else if (canStart) {
+    $('reviewView').innerHTML = '';
+  } else {
+    $('reviewView').innerHTML = '<p class="hint">完成一次与当前草稿一致的可行编排后，可在此启动逐卡播审。未启动播审的草稿与既有编排结论不受影响。</p>';
+  }
+
+  renderHistory(curId);
+  syncTimer(review);
+}
+
+function syncTimer(review) {
+  if (timer) { clearInterval(timer); timer = null; }
+  // 仅进行中的播审需要定时刷新；失配播审历史不变，也照样播放到期逻辑（结论已不可改）。
+  if (review) {
+    const st = replay(review, Date.now());
+    if (st.phase === 'playing' || (st.phase === 'paused' && st.current !== null)) {
+      timer = setInterval(() => renderReviewPanel(), 200);
+      // Node 测试环境下不阻止进程退出；浏览器无 unref，可选链跳过。
+      if (typeof timer.unref === 'function') timer.unref();
+    }
+  }
+}
+
+function fmtClock(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function renderActiveReview(review, curId) {
+  const state = replay(review, Date.now());
+  const mismatch = review.draftId !== curId;
+  const paused = state.phase === 'paused';
+  const done = state.phase === 'done';
+
+  const controls = done ? '' : `
+    <div class="review-controls">
+      ${paused
+        ? '<button type="button" class="btn btn-primary" data-review-act="resume">继续</button>'
+        : '<button type="button" class="btn btn-ghost" data-review-act="pause">暂停</button>'}
+      <button type="button" class="btn btn-pass" data-review-act="pass"
+        ${state.current ? '' : 'disabled'}>通过本卡</button>
+      <button type="button" class="btn btn-rework" data-review-act="rework"
+        ${state.current ? '' : 'disabled'}>需返工</button>
+      <span class="hint" id="verdictHint"></span>
+    </div>`;
+
+  const curCard = state.current ? review.cards[state.current - 1] : null;
+  const currentBlock = curCard ? renderReviewCard(review, curCard, {
+    active: true,
+    remaining: state.remainingMicros,
+    paused,
+    mismatch,
+  }) : '';
+
+  const body = done ? '' : `
+    <div class="review-stage ${paused ? 'is-paused' : ''}">
+      ${paused ? '<div class="review-pause-tag">已暂停</div>' : ''}
+      ${currentBlock}
+    </div>`;
+
+  return `
+    <div class="review-meta">
+      <span>播审 <b>${escapeAttr(review.reviewId)}</b></span>
+      <span>开始于 ${fmtClock(review.createdAt)}</span>
+      <span>快照共 <b>${review.cardCount}</b> 张卡 / ${review.n} 个原文单元</span>
+      ${mismatch ? '<span class="mismatch-tag">与当前草稿失配</span>' : '<span class="match-tag">与当前草稿一致</span>'}
+      <button type="button" class="btn btn-ghost btn-sm" data-review-act="close">收起（保留记录）</button>
+    </div>
+    ${controls}
+    ${body}
+    ${done ? renderDoneSummary(review, state) : ''}
+    <div class="review-allcards">${review.cards.map((c) => renderReviewCard(review, c, {
+      status: state.statuses[c.index - 1],
+    })).join('')}</div>
+  `;
+}
+
+function renderDoneSummary(review, state) {
+  state = state || replay(review, Date.now());
+  const reworkLine = state.firstRework === null
+    ? '<b>无</b>需返工字幕卡'
+    : `首张需返工字幕卡：<span class="fail-tag">第 ${state.firstRework} 张</span>`;
+  return `
+    <div class="review-done">
+      <h3>播审完成</h3>
+      <p class="big">可交付卡数：<b>${state.deliverable}</b> / ${state.totalCards}</p>
+      <p>${reworkLine}</p>
+      <p class="hint">逐卡结论：通过 ${state.deliverable} 张 ·
+        需返工 ${state.statuses.filter((s) => s === 'rework').length} 张 ·
+        过期未判 ${state.statuses.filter((s) => s === 'expired').length} 张</p>
+    </div>`;
+}
+
+// 渲染快照中的一张卡（当前卡或历史结论卡），所有数据均来自冻结快照。
+function renderReviewCard(review, c, opts = {}) {
+  const M = review; // 快照本身携带 timeScale/K/units
+  const units = [];
+  for (let u = c.from; u <= c.to; u++) {
+    const idx = u - 1;
+    const un = M.units[idx];
+    units.push(`
+      <li>
+        <span class="u-idx">${u}</span>
+        <span class="u-time">${unitsToText(un.start, M.timeScale, M.K)} – ${unitsToText(un.end, M.timeScale, M.K)} 秒</span>
+        <span class="u-chars">
+          <span class="zh">中 ${un.zh}</span> · <span class="en">英 ${un.en}</span>
+        </span>
+      </li>`);
+  }
+  const st = opts.status ? STATUS_TEXT[opts.status] : null;
+  const badge = st ? `<span class="verdict-badge ${st.cls}">${st.label}</span>` : '';
+  const remain = opts.active && opts.remaining !== undefined
+    ? `<span class="remain ${opts.paused ? 'paused' : ''}">剩余 <b>${microsToSeconds(opts.remaining, 1)}</b> 秒（本卡显示时长 ${unitsToText(c.dur, M.timeScale, M.K)} 秒）</span>`
+    : `<span class="card-duration">显示时长 <b>${unitsToText(c.dur, M.timeScale, M.K)}</b> 秒</span>`;
+  const mismatchWarn = opts.active && opts.mismatch
+    ? '<div class="mismatch-note">当前草稿已与该快照失配：播放照常到期，但本卡属于冻结的历史编排。</div>'
+    : '';
+  return `
+    <div class="card-block review-card ${opts.active ? 'is-current' : ''} ${st ? 'has-' + st.cls : ''}">
+      <div class="card-head">
+        <span class="card-no">字幕卡 ${c.index}</span>
+        <span class="card-meta">原文单元 <b>${c.from}–${c.to}</b></span>
+        ${remain}
+        <span class="pressure"><span class="lang zh">中文压力 ${pct(c.pZh)}</span></span>
+        <span class="pressure"><span class="lang en">英文压力 ${pct(c.pEn)}</span></span>
+        ${badge}
+      </div>
+      ${mismatchWarn}
+      <ul class="card-units">${units.join('')}</ul>
+    </div>`;
+}
+
+function renderHistory(curId) {
+  const wrap = $('reviewHistoryWrap');
+  const others = reviews.filter((r) => r.reviewId !== activeId);
+  if (!others.length) { wrap.hidden = true; $('reviewHistory').innerHTML = ''; return; }
+  wrap.hidden = false;
+  $('reviewHistory').innerHTML = others.map((r) => {
+    const st = replay(r, Date.now());
+    const mm = r.draftId !== curId;
+    const expanded = expandedHistory === r.reviewId;
+    return `
+      <div class="history-item ${mm ? 'mismatch' : ''}">
+        <button type="button" class="history-head" data-review-open="${escapeAttr(r.reviewId)}">
+          <span>播审 ${escapeAttr(r.reviewId)}</span>
+          <span class="hint">${fmtClock(r.createdAt)} · ${r.cardCount} 张卡 ·
+            阶段 ${phaseText(st.phase)} · 通过 ${st.deliverable}${st.firstRework === null ? '' : ` · 首张返工第 ${st.firstRework} 张`}</span>
+          <span class="${mm ? 'mismatch-tag' : 'match-tag'}">${mm ? '与当前草稿失配' : '一致'}</span>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm" data-review-switch="${escapeAttr(r.reviewId)}">打开查看</button>
+        ${expanded ? renderExpandedHistory(r, st) : ''}
+      </div>`;
+  }).join('');
+}
+
+function phaseText(p) {
+  return ({ idle: '未开始', playing: '播放中', paused: '已暂停', done: '已完成' })[p] || p;
+}
+
+function renderExpandedHistory(review, state) {
+  return `
+    <div class="history-detail">
+      ${state.phase === 'done' ? renderDoneSummary(review, state) : `
+        <p class="hint">该播审${state.phase === 'paused' ? '已暂停' : '尚未完成'}；逐卡结论与冻结快照仍可查看。</p>`}
+      <div class="review-allcards">${review.cards.map((c) => renderReviewCard(review, c, {
+        status: state.statuses[c.index - 1],
+      })).join('')}</div>
+    </div>`;
+}
+
+// ---------------- 播审动作（只追加事件） ----------------
+
+function appendReviewEvent(ev) {
+  const review = activeReview();
+  if (!review) return;
+  review.events.push(ev); // 只追加；过期/重复事件在 replay 中自然无效
+  persistReviews();
+  renderReviewPanel();
+}
+
+function startReview() {
+  if (!lastResult || !lastResult.result.feasible || stale) return;
+  if (activeReview()) return;
+  const review = createReview(lastResult.raw, lastResult.result, { now: Date.now() });
+  reviews.unshift(review);
+  activeId = review.reviewId;
+  persistReviews();
+  renderReviewPanel();
+}
+
 // ---------------- 事件绑定 ----------------
 
 function bind() {
@@ -289,9 +555,58 @@ function bind() {
     $('staleBanner').hidden = true;
     $('resultPanel').hidden = true;
     $('formError').textContent = '';
+    renderReviewPanel();
+  });
+
+  $('reviewStartBtn').addEventListener('click', startReview);
+
+  // 播审控制（事件委托；禁用/过期判定由 replay 兜底，这里只做前置提示）。
+  $('reviewView').addEventListener('click', (e) => {
+    const act = e.target.dataset?.reviewAct;
+    if (!act) return;
+    const review = activeReview();
+    if (!review) return;
+    if (act === 'close') {
+      activeId = null;
+      expandedHistory = null;
+      renderReviewPanel();
+      return;
+    }
+    const now = Date.now();
+    const st = replay(review, now);
+    if (act === 'pause') {
+      if (st.phase === 'playing') appendReviewEvent(pauseEvent(now));
+      return;
+    }
+    if (act === 'resume') {
+      if (st.phase === 'paused') appendReviewEvent(resumeEvent(now));
+      return;
+    }
+    if (act === 'pass' || act === 'rework') {
+      if (!st.current) return;
+      // 操作对象始终是冻结快照；草稿失配仅改变标识，不篡改本播审。
+      if (st.remainingMicros === null || st.remainingMicros <= 0n) return; // 已过期
+      appendReviewEvent(verdictEvent(st.current, act, now));
+    }
+  });
+
+  $('reviewHistory').addEventListener('click', (e) => {
+    const sw = e.target.closest?.('[data-review-switch]')?.dataset?.reviewSwitch;
+    if (sw) {
+      activeId = sw;
+      expandedHistory = null;
+      renderReviewPanel();
+      return;
+    }
+    const id = e.target.closest?.('[data-review-open]')?.dataset?.reviewOpen;
+    if (!id) return;
+    expandedHistory = expandedHistory === id ? null : id;
+    renderReviewPanel();
   });
 }
 
 renderParams();
 renderUnits();
+if (lastResult) renderResult(lastResult.result, lastResult.raw);
+renderReviewPanel();
 bind();

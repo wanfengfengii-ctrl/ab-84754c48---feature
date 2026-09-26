@@ -199,3 +199,80 @@ footer {
   text-align: center; color: var(--muted); font-size: 12px;
   padding: 18px 10px 30px;
 }
+
+/* ---- 逐卡播审 ---- */
+.review-meta {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+  font-size: 12.5px; color: var(--muted);
+  padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px dashed var(--line);
+}
+.review-meta b { color: var(--ink); }
+.match-tag {
+  font-size: 12px; color: var(--ok); background: #eaf7f0;
+  border: 1px solid #bfe3cf; border-radius: 5px; padding: 1px 9px;
+}
+.mismatch-tag {
+  font-size: 12px; color: var(--warn-ink); background: var(--warn-bg);
+  border: 1px solid #ecd49a; border-radius: 5px; padding: 1px 9px; font-weight: 600;
+}
+.btn-sm { padding: 2px 10px; font-size: 12px; border-radius: 5px; }
+.btn-pass { background: var(--ok); color: #fff; border-color: var(--ok); }
+.btn-pass:hover { filter: brightness(1.08); }
+.btn-rework { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-rework:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.review-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0 14px; }
+.review-stage { position: relative; margin-bottom: 14px; }
+.review-stage.is-paused { opacity: .92; }
+.review-pause-tag {
+  display: inline-block; margin-bottom: 8px; font-size: 12.5px; font-weight: 700;
+  color: var(--warn-ink); background: var(--warn-bg); border: 1px solid #ecd49a;
+  border-radius: 5px; padding: 2px 12px;
+}
+.review-card.is-current {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(31, 95, 168, .18);
+}
+.review-card .remain b { font-variant-numeric: tabular-nums; color: var(--primary); }
+.review-card .remain.paused b { color: var(--warn-ink); }
+.mismatch-note {
+  margin: 0 14px 6px; font-size: 12px; color: var(--warn-ink);
+  background: var(--warn-bg); border-radius: 5px; padding: 4px 10px;
+}
+.verdict-badge {
+  border-radius: 5px; padding: 1px 11px; font-size: 12.5px; font-weight: 700;
+}
+.verdict-badge.pass { background: #eaf7f0; color: var(--ok); border: 1px solid #bfe3cf; }
+.verdict-badge.rework { background: var(--danger-bg); color: var(--danger); border: 1px solid #eccbc8; }
+.verdict-badge.expired { background: #eef1f4; color: var(--muted); border: 1px solid var(--line); }
+.review-card.has-rework { border-color: #e3b4b0; }
+.review-card.has-expired { opacity: .8; }
+.review-allcards { margin-top: 14px; }
+.review-allcards .review-card:not(.is-current) { margin-bottom: 8px; }
+
+.review-done {
+  border: 1px solid #bfe3cf; background: #f3faf6; border-radius: 9px;
+  padding: 12px 18px; margin-bottom: 14px;
+}
+.review-done h3 { margin: 0 0 6px; font-size: 15px; color: var(--ok); }
+.review-done p { margin: 3px 0; font-size: 13.5px; }
+.review-done .big { font-size: 15px; }
+.review-done .fail-tag {
+  display: inline-block; background: var(--danger); color: #fff;
+  border-radius: 5px; padding: 1px 10px; font-weight: 700;
+}
+
+.review-history-title { font-size: 14px; margin: 18px 0 8px; }
+.history-item {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 10px;
+}
+.history-item.mismatch { border-color: #ecd49a; background: #fffdf6; }
+.history-head {
+  flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+  border: none; background: none; cursor: pointer; font: inherit;
+  text-align: left; padding: 2px 0; color: var(--ink);
+}
+.history-detail { flex: 1 1 100%; }

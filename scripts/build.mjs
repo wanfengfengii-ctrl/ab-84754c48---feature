@@ -15,11 +15,12 @@ function checkSyntax(file) {
 
 async function main() {
   // 1) 语法校验。
-  for (const f of ['src/decimal.mjs', 'src/model.mjs', 'public/app.mjs']) {
+  for (const f of ['src/decimal.mjs', 'src/model.mjs', 'src/review.mjs', 'public/app.mjs']) {
     checkSyntax(path.join(root, f));
   }
   // 算法模块再实际加载一次，确保导入与顶层代码无误。
   await import(path.join(root, 'src', 'model.mjs'));
+  await import(path.join(root, 'src', 'review.mjs'));
 
   // 2) 复制产物。
   await rm(dist, { recursive: true, force: true });

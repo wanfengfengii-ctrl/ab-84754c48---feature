@@ -71,6 +71,10 @@ async function httpSmoke() {
   await expectFetch('/src/model.mjs', [
     ['含 plan 导出', (b) => b.includes('export function plan')],
   ]);
+  await expectFetch('/src/review.mjs', [
+    ['含播审重放导出', (b) => b.includes('export function replay')],
+    ['快照只追加事件', (b) => b.includes("type: 'verdict'")],
+  ]);
   await expectFetch('/src/decimal.mjs', [
     ['含精确判定', (b) => b.includes('BigInt(chars) * q <= durUnits * rateUnits')],
   ]);
@@ -137,6 +141,69 @@ async function businessSmoke() {
   console.log('[smoke] 不可行诊断通过：稳定指向第 3 单元');
 }
 
+async function reviewSmoke() {
+  // 直接从交付产物 dist/ 加载播审模型，核验重放、失配与既有编排结果共存。
+  const distReview = path.join(root, 'dist', 'src', 'review.mjs');
+  const distModel = path.join(root, 'dist', 'src', 'model.mjs');
+  const {
+    createReview, replay, fingerprint, verdictEvent, pauseEvent, resumeEvent,
+    serializeReview, deserializeReview,
+  } = await import(pathToFileURL(distReview).href);
+  const { plan } = await import(pathToFileURL(distModel).href);
+
+  // 8 单元、4 卡（每卡 2 单元、每单元 1 秒）=> 每卡确定显示 2 秒。
+  const raw = {
+    cardCount: '4', maxPerCard: '2', rateZh: '100', rateEn: '100',
+    units: Array.from({ length: 8 }, (_, i) => ({
+      start: String(i), end: String(i + 1), zh: '1', en: '1',
+    })),
+  };
+  const result = plan(raw);
+  if (!result.feasible) fail('播审冒烟：编排应可行');
+
+  // (1) 启动冻结快照与来源草稿标识。
+  const review = createReview(raw, result, { now: 0 });
+  if (review.cardCount !== 4) fail('快照卡数应为 4');
+  if (review.draftId !== fingerprint(raw)) fail('快照须携带来源草稿标识');
+  if (review.events.length !== 1 || review.events[0].type !== 'start') fail('启动仅追加 start 事件');
+
+  // (2) 重放：第 1 卡在 1 秒时通过；暂停后剩余冻结；继续；第 2 卡返工；
+  //     第 3 卡不判而过期；刷新等价（序列化往返）后结论一致。
+  review.events.push(verdictEvent(1, 'pass', 1000));
+  review.events.push(pauseEvent(1500));
+  let st = replay(review, 50000);
+  if (st.current !== 2) fail(`暂停中当前卡应为 2，实际 ${st.current}`);
+  if (st.remainingMicros !== 1_500_000n) fail(`暂停冻结剩余时长，期望 1.5 秒，实际 ${st.remainingMicros}`);
+  review.events.push(resumeEvent(60000));
+  review.events.push(verdictEvent(2, 'rework', 60500)); // 第 2 卡刚开始即返工
+  review.events.push(verdictEvent(3, 'pass', 999999));  // 迟到事件（第 3 卡早已过期），必须无效
+  st = replay(deserializeReview(serializeReview(review)), 70000);
+  if (st.statuses[0] !== 'pass' || st.statuses[1] !== 'rework') fail('逐卡结论重放错误');
+  if (st.statuses[2] !== 'expired') fail(`第 3 卡应已过期，实际 ${st.statuses[2]}`);
+  if (st.verdicts.length !== 2) fail('迟到/重复事件不得产生判定');
+  if (st.firstRework !== 2) fail(`首张需返工卡应为 2，实际 ${st.firstRework}`);
+
+  // (3) 失配：编辑草稿（不改历史播审），标识应翻转且历史结论不变。
+  const edited = structuredClone(raw);
+  edited.units[0].zh = '2';
+  if (fingerprint(edited) === review.draftId) fail('编辑草稿后标识必须改变（失配）');
+  const st2 = replay(review, 70000);
+  if (st2.statuses.join(',') !== st.statuses.join(',')) fail('失配不得篡改历史播审结论');
+
+  // (4) 完成后稳定给出可交付卡数与首张返工卡。
+  const done = createReview(raw, result, { now: 0 });
+  done.events.push(verdictEvent(1, 'pass', 100));
+  done.events.push(verdictEvent(2, 'rework', 200));
+  done.events.push(verdictEvent(3, 'pass', 300));
+  done.events.push(verdictEvent(4, 'pass', 400));
+  const ds = replay(done, 400);
+  if (ds.phase !== 'done') fail('全部判定后应完成');
+  if (ds.deliverable !== 3) fail(`可交付卡数应为 3，实际 ${ds.deliverable}`);
+  if (ds.firstRework !== 2) fail(`首张需返工卡应为 2，实际 ${ds.firstRework}`);
+  console.log('[smoke] 播审重放/失配/完成汇总核验通过：可交付 3 张，首张返工第 2 张');
+}
+
 await httpSmoke();
 await businessSmoke();
+await reviewSmoke();
 console.log('[smoke] 全部冒烟检查通过 ✔');

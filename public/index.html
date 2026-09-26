@@ -70,6 +70,22 @@
       </div>
       <div id="resultBody"></div>
     </section>
+
+    <section class="panel" id="reviewPanel" hidden aria-live="polite">
+      <h2>逐卡播审</h2>
+      <div class="stale-banner" id="reviewMismatch" hidden>
+        该播审基于<strong>旧草稿快照</strong>，已与当前草稿失配；以下卡片与逐卡结论为冻结的历史记录，不会被改写。
+      </div>
+      <div class="action-bar" id="reviewStartRow">
+        <button type="button" id="reviewStartBtn" class="btn btn-primary">启动逐卡播审</button>
+        <span class="hint">启动时冻结本次编排的完整卡片快照与来源草稿标识；暂停、继续、通过、需返工均只追加记录并重放，刷新或计时器延迟后结论不变。</span>
+      </div>
+      <div id="reviewView"></div>
+      <div id="reviewHistoryWrap" hidden>
+        <h3 class="review-history-title">历史播审（不可变，失配草稿仍可查看每卡结论）</h3>
+        <div id="reviewHistory"></div>
+      </div>
+    </section>
   </main>
 
   <footer>
