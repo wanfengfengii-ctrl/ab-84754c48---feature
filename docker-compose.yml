@@ -1,0 +1,30 @@
+services:
+  # 常驻纯前端 Web 服务：宿主与容器端口均由环境变量 WEB_PORT 配置（默认 8080）。
+  web:
+    build: .
+    image: subtitle-bilingual-cards:latest
+    ports:
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+    environment:
+      WEB_PORT: "${WEB_PORT:-8080}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${WEB_PORT:-8080}/health | grep -q '\"status\":\"ok\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  # 一次性校验服务：自行执行 代码测试 → 构建 → 对 web 容器做静态 HTTP 健康核验
+  # 与字幕编排业务冒烟，以退出码报告结果（0 成功）。
+  # 运行：docker compose up --build verify
+  verify:
+    image: subtitle-bilingual-cards:latest
+    build: .
+    command: ["sh", "scripts/verify.sh"]
+    environment:
+      SMOKE_BASE: "http://web:${WEB_PORT:-8080}"
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: "no"

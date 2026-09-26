@@ -1,0 +1,17 @@
+{
+  "name": "subtitle-bilingual-cards",
+  "version": "1.0.0",
+  "private": true,
+  "description": "口述史双语字幕卡精确编排（纯前端，零运行时依赖）",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/server.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "sh scripts/verify.sh"
+  }
+}

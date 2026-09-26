@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>口述史双语字幕卡编排</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>口述史双语字幕卡编排</h1>
+    <p class="subtitle">
+      8–24 个不可拆语义单元，按原顺序恰好切成指定数量的连续字幕卡；
+      时长取首单元开始至末单元结束，时间与上限均按十进制精确运算，不做浮点近似。
+    </p>
+  </header>
+
+  <main>
+    <section class="panel" id="paramsPanel" aria-label="编排参数">
+      <h2>成片参数</h2>
+      <div class="param-grid">
+        <label>字幕卡数
+          <input type="number" id="cardCount" min="1" max="24" step="1" inputmode="numeric" />
+        </label>
+        <label>每卡最多单元数
+          <input type="number" id="maxPerCard" min="1" max="24" step="1" inputmode="numeric" />
+        </label>
+        <label>中文每秒阅读上限（字符/秒）
+          <input type="text" id="rateZh" inputmode="decimal" placeholder="如 6 或 6.5" />
+        </label>
+        <label>英文每秒阅读上限（字符/秒）
+          <input type="text" id="rateEn" inputmode="decimal" placeholder="如 9 或 9.2" />
+        </label>
+      </div>
+    </section>
+
+    <section class="panel" id="unitsPanel" aria-label="语义单元">
+      <div class="panel-head">
+        <h2>语义单元（按时间排列、不重叠）</h2>
+        <div class="row-actions">
+          <button type="button" id="addUnit" class="btn btn-ghost">＋ 添加单元</button>
+          <span class="hint" id="unitCountHint"></span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="unitsTable">
+          <thead>
+            <tr>
+              <th class="col-idx">#</th>
+              <th>起始秒</th>
+              <th>结束秒</th>
+              <th>中文字符数</th>
+              <th>英文字符数</th>
+              <th class="col-op"></th>
+            </tr>
+          </thead>
+          <tbody id="unitsBody"></tbody>
+        </table>
+      </div>
+      <div class="action-bar">
+        <button type="button" id="planBtn" class="btn btn-primary">编 排</button>
+        <button type="button" id="resetSample" class="btn btn-ghost">恢复示例草稿</button>
+        <span id="formError" class="form-error" role="alert"></span>
+      </div>
+    </section>
+
+    <section class="panel result-panel" id="resultPanel" hidden aria-live="polite">
+      <div class="stale-banner" id="staleBanner" hidden>
+        草稿已修改，以下为<strong>旧编排，已失效</strong>；请重新点击「编排」。
+      </div>
+      <div id="resultBody"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>纯前端应用 · 草稿自动保存在本浏览器（刷新后可继续修改并重新编排）· 算术全程整数精确判定</span>
+  </footer>
+
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>
